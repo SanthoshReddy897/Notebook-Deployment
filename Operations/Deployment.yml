@@ -1,0 +1,109 @@
+# ----------------------------
+# Trigger configuration
+# ----------------------------
+trigger: none  # Pipeline does not auto-trigger, must be run manually
+
+# ----------------------------
+# Parameters (runtime inputs)
+# ----------------------------
+parameters:
+- name: Deployment_Environment 
+  displayName: "Deployment_Environment"
+  type: string
+  default: "DEV"
+  values:
+    - "DEV"   # Development environment
+    - "PROD"  # Production environment
+    - "QA"    # QA/Testing environment
+
+- name: Environment_Type 
+  displayName: "Environment_Type"
+  type: string
+  default: "Primary"
+  values:
+    - "Primary"   # Main target environment
+    - "Secondary" # Backup/failover environment
+
+# ----------------------------
+# Variables (shared config)
+# ----------------------------
+variables:
+  - group: Fabric-SPN  # Variable group containing Fabric service principal secrets
+  - template: /Deploy/Config/CONFIG_${{parameters.Deployment_Environment}}.yml  
+    # Loads environment-specific config (DEV/QA/PROD)
+
+# ----------------------------
+# Stage 1: Manual Approval Gate
+# ----------------------------
+stages:
+- stage: Approval_Stage_${{parameters.Deployment_Environment}}
+  jobs:
+  - deployment: Approval
+    environment: ${{parameters.Deployment_Environment}}-Deploy # Environment used in Azure DevOps Envs
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - script: echo "Approve"  # Placeholder step to enforce approval gate before deployment
+
+# ----------------------------
+# Stage 2: Deployment to Fabric Workspace
+# ----------------------------
+- stage: DeployCodeToWorkspace
+  displayName: "Deployment Stage"
+  jobs:
+    - job: InvokePythonOrchestratorFunction
+      timeoutInMinutes: 360  # Long timeout for large deployments
+      displayName: "Invoke the Python orchestrator function for deployment"
+      pool:
+        vmImage: "ubuntu-latest"  # Using latest Ubuntu VM image
+
+      steps:
+        # ----------------------------
+        # Step 1: Ensure correct Python version is installed
+        # ----------------------------
+        - task: UsePythonVersion@0
+          inputs:
+            versionSpec: "3.x"   # Use latest Python 3.x
+            addToPath: true      # Add Python to PATH
+
+        # ----------------------------
+        # Step 2: Install required Python dependencies
+        # ----------------------------
+        - script: |
+            python -m pip install pandas requests azure-storage-file-datalake azure-identity pyyaml
+          displayName: "Install Python dependencies"
+          # Required for deployment scripts (data handling, REST calls, Azure SDKs)
+
+        # ----------------------------
+        # Step 3: Download artifacts from the latest successful build
+        # ----------------------------
+        - task: DownloadPipelineArtifact@2
+          displayName: "Download Latest Build Artifacts"
+          inputs:
+            buildType: "specific"         # Download from a specific build pipeline
+            project: "$(System.TeamProject)"
+            pipeline: ${{ variables.BuildPipelineName }}  # Pipeline name from variables
+            runVersion: 'latest'          # Always fetch latest successful run
+            artifactName: ${{ variables.ArtifactName }}   # Artifact name from variables
+            targetPath: "$(Build.SourcesDirectory)/ELM"   # Download path
+
+        # ----------------------------
+        # Step 4: Run Python Orchestrator Script for Deployment
+        # ----------------------------
+        - script: |
+            python Deploy/Common/deployment_main.py
+          displayName: "Invoke orchestrator function"
+          env:
+            # Service Principal credentials from variable group
+            client_secret: $(client_secret)
+            client_id: $(client_id)  
+            tenant_id: $(tenant_id)
+
+            # Deployment context values
+            deployment_env: ${{parameters.Deployment_Environment}}  # DEV/QA/PROD
+            environment_type: ${{parameters.Environment_Type}}      # Primary/Secondary
+            artifact_path: "$(Build.SourcesDirectory)/ELM"          # Path to downloaded artifacts
+            build_number: "$(Build.BuildNumber)"                    # Build number for traceability
+            start_time: $(Build.StartTime)                          # Build start timestamp
+            connections: $(Connections)                             # Custom connection config

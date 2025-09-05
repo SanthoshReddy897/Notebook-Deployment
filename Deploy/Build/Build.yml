@@ -1,0 +1,139 @@
+
+trigger: none     
+pool:
+  vmImage: "ubuntu-latest"  
+ 
+parameters:
+- name: Deployment_Environment 
+  displayName: "Build Configuration Environment"
+  type: string
+  default: "DEV"
+  values:
+    - "DEV"   
+    - "PROD"  
+    - "QA"    
+
+variables:
+  - template: /Deploy/Config/CONFIG_${{parameters.Deployment_Environment}}.yml  
+  - name: BuildConfiguration
+    value: 'Release'   
+  - name: IsMasterBranch
+    value: $[eq(variables['Build.SourceBranch'], 'refs/heads/main')]  
+
+    
+stages:
+- stage: Build
+  displayName: "Build and Package"
+  jobs:
+  - job: BuildJob
+    displayName: "Build Fabric Artifacts"
+    steps:
+    - script: |
+        echo "Build Number: $(Build.BuildNumber)"
+        echo "Build ID: $(Build.BuildId)"
+        echo "Source Branch: $(Build.SourceBranch)"
+        echo "Commit: $(Build.SourceVersion)"
+        echo "Build Reason: $(Build.Reason)"
+        echo "Artifact Name: ${{ variables.ArtifactName }}"
+
+
+      displayName: "Display Build Information"
+    - task: UsePythonVersion@0
+      displayName: "Use Python 3.x"
+      inputs:
+        versionSpec: "3.x"
+        addToPath: true
+    - script: |
+        python -m pip install --upgrade pip
+        python -m pip install pytest pyyaml
+        # Run unit tests if present:
+        # python -m pytest tests/ --junitxml=test-results.xml
+
+
+      displayName: "Install Dependencies and Run Validation"
+      continueOnError: false  
+    - script: |
+        echo "Validating configuration files..."
+        find Deploy/Config -name "*.yml" -exec python -c "import yaml; yaml.safe_load(open('{}'))" \;
+        echo "All YAML files are valid"
+      displayName: "Validate Configuration Files"
+      continueOnError: false
+
+
+    - task: CopyFiles@2
+      displayName: "Copy Source Files to Staging"
+      inputs:
+        SourceFolder: $(Build.SourcesDirectory)
+        TargetFolder: $(Build.ArtifactStagingDirectory)/ARM
+        CleanTargetFolder: true
+        OverWrite: true
+        Contents: |
+          **/*
+          !.git/**/*
+          !.gitignore
+          !.azure-pipelines/**/*
+          !README.md
+          !docs/**/*
+          !tests/**/*
+          !.pytest_cache/**/*
+          !**/__pycache__/**/*
+          !**/*.pyc
+    - script: |
+        mkdir -p $(Build.ArtifactStagingDirectory)/ARM/metadata
+        cat > $(Build.ArtifactStagingDirectory)/ARM/metadata/build-info.json << EOF
+        {
+          "buildNumber": "$(Build.BuildNumber)",
+          "buildId": "$(Build.BuildId)",
+          "sourceVersion": "$(Build.SourceVersion)",
+          "sourceBranch": "$(Build.SourceBranch)",
+          "buildReason": "$(Build.Reason)",
+          "buildDate": "$(System.Date)",
+          "buildTime": "$(System.Time)",
+          "repository": "$(Build.Repository.Name)",
+          "artifactName": "${{ variables.ArtifactName }}"
+        }
+        EOF
+
+
+      displayName: "Create Build Metadata"
+    - script: |
+        echo "Contents of staging directory:"
+        find $(Build.ArtifactStagingDirectory) -type f | head -20
+        echo "..."
+        echo "Total files: $(find $(Build.ArtifactStagingDirectory) -type f | wc -l)"
+
+
+      displayName: "Verify Staged Files"
+    - task: PublishPipelineArtifact@1
+      displayName: "Publish Build Artifact: ${{ variables.ArtifactName }}"
+      inputs:
+        path: $(Build.ArtifactStagingDirectory)
+        artifactName: ${{ variables.ArtifactName }}
+        publishLocation: "pipeline"
+    - script: |
+        if [ "$(IsMasterBranch)" = "True" ]; then
+          echo "##vso[build.addbuildtag]production-ready"
+        fi
+        echo "##vso[build.addbuildtag]${{parameters.Deployment_Environment}}"
+        echo "##vso[build.addbuildtag]$(Build.SourceBranchName)"
+      displayName: "Tag Build"
+      condition: always()  
+
+
+- stage: PostBuild
+  displayName: "Post Build Actions"
+  dependsOn: Build
+  condition: always()  
+  jobs:
+  - job: NotifyAndCleanup
+    displayName: "Notifications and Cleanup"
+    steps:
+    - script: |
+        if [ "$(Agent.JobStatus)" = "Succeeded" ]; then
+          echo "✅ Build completed successfully!"
+          echo "Artifact '${{ variables.ArtifactName }}' is ready for deployment"
+          echo "Build Number: $(Build.BuildNumber)"
+        else
+          echo "❌ Build failed!"
+        fi
+      displayName: "Build Status Notification"

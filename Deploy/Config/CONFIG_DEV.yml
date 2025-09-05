@@ -1,0 +1,14 @@
+variables:
+  group: Fabric-SPN   
+  Env: "DEV"
+  BuildPipelineName: "Visa"
+  ArtifactName: "Fabric"
+  Connections: >
+    {"Connections": [
+       {"connection_name": "SalesLakehouse_fastrack", "type": "Fabric Lakehouse"},
+       {"connection_name": "Arjun_EMPN1689", "type": "Fabric Lakehouse"},
+       {"connection_name": "AdventureWorks", "type": "Fabric Lakehouse"},
+       {"connection_name": "Bronze", "type": "Fabric Lakehouse"},
+       {"connection_name": "Gold", "type": "Fabric Lakehouse"},
+       {"connection_name": "Silver", "type": "Fabric Lakehouse"}
+     ]}
